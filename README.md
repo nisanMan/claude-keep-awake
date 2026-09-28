@@ -12,7 +12,7 @@ A small Python script for Windows that keeps the computer from going to sleep **
 ## Quick start
 
 ```cmd
-git clone https://github.com/<user>/claude-keep-awake.git
+git clone https://github.com/nisanMan/claude-keep-awake.git
 cd claude-keep-awake
 python keep_awake.py
 ```
