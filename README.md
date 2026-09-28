@@ -1,15 +1,15 @@
 # Claude Keep-Awake
 
-סקריפט Python קטן ל-Windows שמונע מהמחשב להיכנס לשינה **כל עוד Claude Code עובד בתוך VS Code**, עם תקרת בטיחות: ריצה שנמשכת יותר מ-**2 שעות** מפסיקה לחסום שינה.
+A small Python script for Windows that keeps the computer from going to sleep **while Claude Code is working inside VS Code**, with a safety cap: a run that lasts longer than **2 hours** stops blocking sleep.
 
-- קובץ אחד, ספרייה סטנדרטית בלבד (`ctypes`), בלי `pip install`
-- לא דורש הרשאות מנהל, לא משנה הגדרות חשמל ולא ניגש לרשת
-- מדדים חיים בקונסול וסיכום בסוף הריצה
-- גישה לתהליכים לקריאה בלבד (`PROCESS_QUERY_LIMITED_INFORMATION`), והנעילה משתחררת תמיד כשהסקריפט נסגר
+- Single file, standard library only (`ctypes`), no `pip install`
+- No admin rights, no changes to power settings, no network access
+- Read-only access to processes (`PROCESS_QUERY_LIMITED_INFORMATION`); the sleep lock is always released when the script exits
+- Live metrics in the console and a summary on exit
 
 ---
 
-## הפעלה מהירה
+## Quick start
 
 ```cmd
 git clone https://github.com/<user>/claude-keep-awake.git
@@ -17,233 +17,205 @@ cd claude-keep-awake
 python keep_awake.py
 ```
 
-כדי לעצור לוחצים `Ctrl+C`. הנעילה משתחררת ומודפס סיכום. גם סגירת חלון ה-CMD משחררת את הנעילה, כי Windows מבטל אותה אוטומטית כשהתהליך מסתיים.
+Press `Ctrl+C` to stop. The lock is released and a summary is printed. Closing the console window also releases the lock, because Windows clears it automatically when the process ends.
 
-דרישות: Windows 10/11, Python 3.8 ומעלה.
+Requirements: Windows 10/11, Python 3.8+.
 
-### דוגמאות
+### Examples
 
 ```cmd
-:: ברירת מחדל: תקרה של 120 דקות, 5 דקות שקט מסיימות ריצה
+:: Defaults: 120-minute cap, 5 quiet minutes end a run
 python keep_awake.py
 
-:: גם להשאיר את המסך דלוק
+:: Also keep the screen on
 python keep_awake.py --keep-display
 
-:: תקרה של 3 שעות, שורת פלט לכל בדיקה, ושמירת אירועים לקובץ
+:: 3-hour cap, one output line per check, and log events to a file
 python keep_awake.py --max-run 180 --verbose --log keep_awake.log
 ```
 
 ---
 
-## איך זה עובד
+## How it works
 
 ```
- כל 5 שניות
+ every 5 seconds
      │
      ▼
- מציאת claude.exe שהנתיב שלו מכיל "anthropic.claude-code"   ← התוסף של VS Code
-     │  + כל תהליכי הצאצא (shell, python, npm, בדיקות שClaude מריץ)
+ find claude.exe whose path contains "anthropic.claude-code"   ← the VS Code extension
+     │  + all descendant processes (shells, python, npm, tests that Claude runs)
      ▼
- מדידת CPU ו-I/O של כל העץ, וזיהוי תהליכים חדשים
+ measure CPU and I/O of the whole tree, and detect new processes
      │
      ▼
- פעילות?  ── כן ──►  ACTIVE  ──►  SetThreadExecutionState(ES_SYSTEM_REQUIRED)
-     │                 │
-     │                 └── הריצה עברה את --max-run ──►  CAPPED  (הנעילה משתחררת)
+ activity? ── yes ──►  ACTIVE  ──►  SetThreadExecutionState(ES_SYSTEM_REQUIRED)
+     │                   │
+     │                   └── run exceeded --max-run ──►  CAPPED  (lock released)
      │
-     └── אין פעילות במשך --idle-grace דקות ──►  IDLE  (הנעילה משתחררת, הריצה נסגרת)
+     └── no activity for --idle-grace minutes ──►  IDLE  (lock released, run closed)
 ```
 
-**הגדרת "ריצה":** ריצה מתחילה בפעילות הראשונה ונגמרת אחרי `--idle-grace` דקות רצופות בלי פעילות. תקופת החסד הזו מכסה הפסקות קצרות, למשל כשהמודל חושב ולא נשלח כמעט מידע.
+**What a "run" is:** a run starts at the first activity and ends after `--idle-grace` consecutive minutes without activity. The grace period covers short pauses, for example while the model is thinking and little data is flowing.
 
-**הגדרת "פעילות"** (מספיק שאחד מהתנאים מתקיים):
+**What counts as "activity"** (any one is enough):
 
-| סימן | סף ברירת מחדל |
+| Signal | Default threshold |
 |---|---|
-| CPU של עץ התהליכים | ≥ 1.0% מליבה אחת |
-| I/O של עץ התהליכים (קבצים ורשת) | ≥ 2 KB/s |
-| תהליך חדש בעץ (Claude הריץ כלי) | כל תהליך חדש |
+| CPU of the process tree | ≥ 1.0% of one core |
+| I/O of the process tree (files and network) | ≥ 2 KB/s |
+| New process in the tree (Claude ran a tool) | any new process |
 
-**מה Windows מקבל:** `ES_SYSTEM_REQUIRED` בלבד. המחשב לא נכנס לשינה, אבל המסך עדיין יכול לכבות וה-lock screen עדיין עובד. `--keep-display` מוסיף `ES_DISPLAY_REQUIRED`.
+**What Windows receives:** only `ES_SYSTEM_REQUIRED`. The computer won't sleep, but the screen can still turn off and the lock screen still works. `--keep-display` adds `ES_DISPLAY_REQUIRED`.
 
-> **מקרה חריג שחשוב להכיר:** סגירת מכסה במחשב נייד, או לחיצה ידנית על Sleep, **גוברות** על הנעילה. זו התנהגות מכוונת של Windows.
+> **Worth knowing:** closing a laptop lid or choosing Sleep manually **overrides** the lock. This is intended Windows behavior.
 
 ---
 
-## המדדים בקונסול
+## Console metrics
 
-שורה חיה שמתעדכנת במקום:
+A live line that updates in place:
 
 ```
 [12:14:53] ACTIVE    | claude 1, procs   5 | cpu   4.1% | io   1.3 KB/s | run 00:00:03 | cap in 01:59:56 | awake 00:00:03 | AC 100%
 ```
 
-| שדה | משמעות |
+| Field | Meaning |
 |---|---|
-| `ACTIVE / IDLE / CAPPED / NO CLAUDE` | מצב נוכחי (`NO CLAUDE` = לא נמצא תהליך של Claude Code) |
-| `claude N` | כמה תהליכי Claude Code נמצאו (בערך אחד לכל חלון או שיחה) |
-| `procs N` | גודל העץ: Claude יחד עם הכלים שהוא מריץ |
-| `cpu` | CPU של העץ, באחוזים מליבה אחת |
-| `io` | קצב I/O של העץ |
-| `run` / `cap in` | משך הריצה הנוכחית והזמן שנשאר עד התקרה |
-| `idle` | כמה זמן עבר מהפעילות האחרונה |
-| `awake` | הזמן המצטבר שבו הנעילה הייתה פעילה |
-| `AC 100%` / `battery 64%` | מקור חשמל ורמת סוללה |
+| `ACTIVE / IDLE / CAPPED / NO CLAUDE` | Current state (`NO CLAUDE` = no Claude Code process found) |
+| `claude N` | Number of Claude Code processes found (roughly one per window or conversation) |
+| `procs N` | Tree size: Claude plus the tools it runs |
+| `cpu` | CPU of the tree, as % of one core |
+| `io` | I/O rate of the tree |
+| `run` / `cap in` | Length of the current run and time left until the cap |
+| `idle` | Time since the last activity |
+| `awake` | Total time the lock has been held |
+| `AC 100%` / `battery 64%` | Power source and battery level |
 
-אירועים (תחילת ריצה, סוף ריצה, הגעה לתקרה, הפעלה ושחרור של הנעילה) מודפסים כשורות קבועות, ואם הוגדר `--log` הם נכתבים גם לקובץ. ביציאה מודפס סיכום: זמן ניטור, זמן ערות, מספר ריצות, ריצות שהגיעו לתקרה, הריצה הארוכה ביותר ושיא ה-CPU.
+Events (run start, run end, cap reached, lock on/off) are printed as permanent lines and, with `--log`, also written to a file. On exit a summary is printed: monitor uptime, time kept awake, number of runs, runs that hit the cap, longest run, and peak CPU.
 
 ---
 
-## כל האפשרויות
+## Options
 
-| דגל | ברירת מחדל | תיאור |
+| Flag | Default | Description |
 |---|---|---|
-| `--interval` | 5 | שניות בין בדיקות |
-| `--max-run` | 120 | דקות. ריצה ארוכה מזה מפסיקה לחסום שינה |
-| `--idle-grace` | 5 | דקות בלי פעילות עד שריצה נחשבת גמורה |
-| `--cpu-threshold` | 1.0 | סף CPU (% מליבה) |
-| `--io-threshold` | 2.0 | סף I/O ב-KB/s |
-| `--keep-display` | כבוי | להשאיר גם את המסך דלוק |
-| `--match` | `anthropic.claude-code` | מחרוזת בנתיב של `claude.exe`. אפשר לחזור על הדגל |
-| `--log FILE` | — | כתיבת אירועים לקובץ |
-| `--verbose` | כבוי | שורת פלט לכל בדיקה במקום שורה חיה |
+| `--interval` | 5 | Seconds between checks |
+| `--max-run` | 120 | Minutes. A longer run stops blocking sleep |
+| `--idle-grace` | 5 | Minutes without activity before a run is considered finished |
+| `--cpu-threshold` | 1.0 | CPU threshold (% of one core) |
+| `--io-threshold` | 2.0 | I/O threshold in KB/s |
+| `--keep-display` | off | Also keep the screen on |
+| `--match` | `anthropic.claude-code` | Substring of the `claude.exe` path. Repeatable |
+| `--log FILE` | — | Append events to a file |
+| `--verbose` | off | One output line per check instead of a live line |
 
-### כיול
+### Calibration
 
-הספים נקבעו לפי מדידה אמיתית: Claude Code במנוחה הוא בערך 0% CPU ו-0–700 B/s, ובזמן עבודה הוא 0.5–5% CPU ויותר מ-1 KB/s, ועוד תהליכים חדשים. במחשבים אחרים המספרים עשויים להיות שונים:
+The thresholds are based on real measurements: an idle Claude Code uses about 0% CPU and 0–700 B/s; while working it uses 0.5–5% CPU and more than 1 KB/s, plus new processes. Numbers may differ on other machines:
 
-1. מריצים `python keep_awake.py --verbose` כש-Claude Code פתוח **ולא עושה כלום**, ומסתכלים על `cpu` ו-`io`.
-2. אם המצב קופץ ל-ACTIVE בלי סיבה, מעלים את `--io-threshold` או את `--cpu-threshold`.
-3. אם ריצות ארוכות "נופלות" באמצע (בזמן שהמודל חושב), מגדילים את `--idle-grace`.
+1. Run `python keep_awake.py --verbose` while Claude Code is open **and doing nothing**, and watch `cpu` and `io`.
+2. If the state jumps to ACTIVE for no reason, raise `--io-threshold` or `--cpu-threshold`.
+3. If long runs "drop" in the middle (while the model is thinking), increase `--idle-grace`.
 
-### בדיקה שהנעילה באמת פעילה
+### Verifying the lock
 
-ב-CMD **כמנהל**:
+In an **elevated** command prompt:
 
 ```cmd
 powercfg /requests
 ```
 
-תחת `SYSTEM:` אמור להופיע `python.exe` כשהמצב הוא ACTIVE.
+`python.exe` should appear under `SYSTEM:` while the state is ACTIVE.
 
 ---
 
-## מגבלות ידועות
+## Known limitations
 
-- **הזיהוי היוריסטי.** הסקריפט מסיק שיש ריצה מתוך CPU ו-I/O, ולא יודע בוודאות אם Claude באמצע משימה. ההשלכה: ריצה עלולה להיסגר מוקדם אם יש שקט ארוך מ-`--idle-grace`, ורעש רקע עלול להיראות כמו ריצה קצרה. אפשר לפתור את זה עם hooks (ראו מפת דרכים).
-- **Claude Code ב-CLI** שמותקן דרך npm רץ כ-`node.exe`, ולכן לא מזוהה כברירת מחדל. גרסת ה-native (`~/.local/bin/claude.exe`) נתמכת עם `--match .local\bin\claude.exe`.
-- **Windows בלבד.**
-- **כל חלונות VS Code נמדדים יחד.** עבודה בחלון אחד שומרת על המחשב ער גם אם חלון אחר במנוחה, וזה מכוון.
+- **Detection is heuristic.** The script infers a run from CPU and I/O; it doesn't know for sure whether Claude is mid-task. As a result, a run may end early if a pause is longer than `--idle-grace`, and background noise may look like a short run. Hooks would solve this (see the roadmap).
+- **Claude Code CLI** installed via npm runs as `node.exe`, so it is not detected by default. The native build (`~/.local/bin/claude.exe`) is supported with `--match .local\bin\claude.exe`.
+- **Windows only.**
+- **All VS Code windows are measured together.** Work in one window keeps the computer awake even if another window is idle. This is intentional.
 
 ---
 
-## ניתוח מעמיק: מה צריך להיות בפרויקט כזה כדי שיהיה מקצועי
+## Roadmap
 
-החלק הזה מפרט מה קיים היום, מה חסר, ולמה כל דבר חשוב, לפי סדר עדיפות.
+### 1. Accuracy: a reliable run signal *(highest priority)*
 
-### 1. דיוק: סימן אמין לכך שיש ריצה *(הכי חשוב)*
+A keep-awake tool is judged by two failures: **the computer sleeps in the middle of a task**, or **the computer stays awake for nothing** (battery, heat, wear). The CPU/I/O heuristic is a good compromise, but not exact.
 
-כל כלי keep-awake נשפט לפי שני כשלים: **המחשב נרדם באמצע משימה**, או **המחשב נשאר ער לשווא** (סוללה, חום, בלאי). היוריסטיקה של CPU ו-I/O היא פשרה טובה, אבל לא מדויקת.
+**The proper solution is [Claude Code hooks](https://docs.claude.com/en/docs/claude-code/hooks).** Claude Code can run a command on defined events:
 
-**הפתרון המקצועי הוא [Claude Code hooks](https://docs.claude.com/en/docs/claude-code/hooks).** Claude Code יכול להריץ פקודה באירועים מוגדרים:
-
-| Hook | פעולה |
+| Hook | Action |
 |---|---|
-| `UserPromptSubmit` | כתיבת `busy` לקובץ מצב, למשל `%LOCALAPPDATA%\claude-keep-awake\<session_id>` |
-| `Stop` / `SessionEnd` | מחיקת הקובץ |
+| `UserPromptSubmit` | Write `busy` to a state file, e.g. `%LOCALAPPDATA%\claude-keep-awake\<session_id>` |
+| `Stop` / `SessionEnd` | Delete the file |
 
-הסקריפט קורא את קובץ המצב, ומשתמש ב-CPU ו-I/O רק כגיבוי. כך יודעים בדיוק מתי ריצה מתחילה ונגמרת, כל שיחה נמדדת בנפרד, והזיהוי עובד גם בשקט ארוך בזמן שהמודל חושב. חשוב להוסיף **timeout לקובץ מצב ישן** (למשל אם VS Code קרס ו-`Stop` לא רץ), אחרת המחשב יישאר ער לנצח.
+The script reads the state file and uses CPU/I/O only as a fallback. This gives exact run start and end times, per-conversation tracking, and correct detection during long silent thinking. A **timeout for stale state files** is essential (e.g. if VS Code crashed and `Stop` never ran), otherwise the computer would stay awake forever.
 
-### 2. ארכיטקטורה שאפשר לבדוק
+### 2. Testable architecture
 
-היום הכול בקובץ אחד. זה טוב לכלי פשוט, אבל פרויקט מקצועי מפריד שלוש שכבות:
+Everything is in one file today, which suits a simple tool. A larger version would separate the layers:
 
 ```
 claude-keep-awake/
-├── pyproject.toml              # מטא-דאטה, תלויות, entry point: keep-awake = claude_keep_awake.cli:main
-├── README.md
-├── CHANGELOG.md
-├── LICENSE
+├── pyproject.toml              # metadata, entry point: keep-awake = claude_keep_awake.cli:main
 ├── src/claude_keep_awake/
-│   ├── win32.py                # כל הקריאות ל-ctypes, ורק הן (שכבה דקה ל-OS)
-│   ├── probes.py               # ProcessTreeProbe, HookStateProbe: מחזירים Sample
-│   ├── state.py                # מכונת המצבים IDLE→ACTIVE→CAPPED, פונקציה טהורה של (מצב, דגימה, זמן)
-│   ├── report.py               # פלט לקונסול, לוג, סיכום
-│   └── cli.py                  # argparse וקובץ קונפיג
+│   ├── win32.py                # all ctypes calls, and nothing else (thin OS layer)
+│   ├── probes.py               # ProcessTreeProbe, HookStateProbe: return a Sample
+│   ├── state.py                # IDLE→ACTIVE→CAPPED state machine, pure function of (state, sample, time)
+│   ├── report.py               # console output, log, summary
+│   └── cli.py                  # argparse and config file
 └── tests/
-    ├── test_state.py           # כל המעברים, כולל תקרה ו-grace, עם שעון מזויף
-    └── test_probes.py          # win32 ממוקס
+    ├── test_state.py           # every transition, including cap and grace, with a fake clock
+    └── test_probes.py          # win32 mocked
 ```
 
-**למה זה משנה:** הלוגיקה החשובה, כלומר מתי לנעול ומתי לשחרר, צריכה להיבדק **בלי לחכות שעתיים**. כשמכונת המצבים מקבלת זמן ודגימות כקלט (שעון מוזרק), בדיקה של "ריצה של 121 דקות משחררת את הנעילה" רצה במילישניות.
+With an injected clock, a test like "a 121-minute run releases the lock" runs in milliseconds instead of two hours.
 
-### 3. בדיקות
+### 3. Tests and CI
 
-| סוג | מה בודקים |
+| Type | What to test |
 |---|---|
-| Unit: מכונת מצבים | התחלת ריצה, סיום אחרי grace, הגעה לתקרה, ריצה חדשה אחרי תקרה, Claude נסגר באמצע ריצה, קפיצת שעון או חזרה משינה |
-| Unit: חישוב דלתות | תהליך שמת בין דגימות, PID שחוזר לשימוש (לכן המפתח הוא `(pid, creation_time)`) |
-| אינטגרציה (Windows בלבד) | `SetThreadExecutionState` נקרא עם הדגלים הנכונים, ו-`powercfg /requests` מראה את התהליך |
-| Smoke | `python keep_awake.py --help` וריצה של 10 שניות בלי חריגות |
+| Unit: state machine | Run start, end after grace, hitting the cap, new run after the cap, Claude closed mid-run, clock jumps / resume from sleep |
+| Unit: deltas | Process exiting between samples, PID reuse (hence the `(pid, creation_time)` key) |
+| Integration (Windows only) | `SetThreadExecutionState` called with the right flags; `powercfg /requests` shows the process |
+| Smoke | `python keep_awake.py --help` and a 10-second run without exceptions |
 
-CI: GitHub Actions עם `runs-on: windows-latest` ומטריצה של Python 3.8 עד 3.13.
+CI: GitHub Actions on `windows-latest` with a Python 3.8–3.13 matrix, plus ruff and mypy.
 
-### 4. איכות קוד
+### 4. Safety: when *not* to keep the computer awake
 
-- **ruff** ללינט ולפורמט, **mypy** לטיפוסים (ה-structures של `ctypes` מרוויחים מזה במיוחד)
-- **pre-commit** שמריץ את שניהם לפני כל commit
-- מודול **`logging`** במקום `print` לאירועים, עם רמות ו-`RotatingFileHandler` כדי שהלוג לא יגדל בלי סוף
-- **קוד יציאה** ברור: 0 ליציאה תקינה, 2 לשגיאת פרמטרים, 1 לכשל API
+- **Low battery:** release the lock below X% (e.g. `--min-battery 20`). The script already reads `GetSystemPowerStatus`, so this is a small change.
+- **On battery at all:** an `--ac-only` option, useful for a laptop in a bag.
+- **Absolute cap:** in addition to the per-run cap, a maximum awake time per day.
 
-### 5. בטיחות: מתי *לא* להשאיר את המחשב ער
+### 5. User experience and distribution
 
-כלי שמונע שינה אחראי גם למקרים שבהם שינה היא הדבר הנכון:
-
-- **סוללה נמוכה:** לשחרר את הנעילה מתחת ל-X% (למשל `--min-battery 20`). הקוד כבר קורא את `GetSystemPowerStatus`, כך שזה שינוי קטן.
-- **מצב סוללה בכלל:** אפשרות `--ac-only`, ששימושית מאוד למחשב נייד בתיק.
-- **תקרה מוחלטת:** מעבר לתקרה לכל ריצה (קיימת), גם מקסימום זמן ערות ליום.
-- **תמיד לשחרר ביציאה:** קיים (`finally`), ו-Windows ממילא משחרר כשהתהליך מת.
-- **אין הרשאות מנהל ואין שינוי קבוע של הגדרות חשמל:** קיים. הגישה של `powercfg /change` מסוכנת, כי קריסה משאירה את המחשב במצב שונה לתמיד.
-
-### 6. חוויית משתמש והפצה
-
-| שלב | תוצר |
+| Item | Result |
 |---|---|
-| התקנה | `pipx install .` שנותן פקודה `keep-awake` מכל מקום |
-| הפעלה אוטומטית | Task Scheduler בכניסה למערכת עם `pythonw.exe` (בלי חלון), או קיצור דרך ב-`shell:startup` |
-| EXE עצמאי | PyInstaller `--onefile` למי שאין לו Python |
-| אייקון מגש | `pystray`: צבע לפי מצב, תפריט עם השהיה, שחרור ויציאה |
-| התראות | Toast של Windows כשריצה הגיעה לתקרה ("המחשב יכול לישון עכשיו") |
-| קונפיג | קובץ `config.toml` (`tomllib` מ-3.11) כך שלא צריך להקליד דגלים כל פעם |
-| מופע יחיד | mutex בשם, כדי שהסקריפט לא ירוץ פעמיים |
+| Install | `pipx install .` providing a `keep-awake` command |
+| Autostart | Task Scheduler at logon with `pythonw.exe` (no window) |
+| Standalone EXE | PyInstaller `--onefile` for users without Python |
+| Tray icon | Color by state; menu with pause, release and exit |
+| Notifications | Windows toast when a run hits the cap |
+| Config | `config.toml` so flags don't need retyping |
+| Single instance | Named mutex so the script can't run twice |
+| Statistics | JSON-lines event log and a `--stats` command (runs per day, average length, cap hits) to tune `--max-run` from real usage |
 
-### 7. תצפיתיות (Observability)
+---
 
-- לוג אירועים מובנה, למשל JSON lines: `{"ts": ..., "event": "run_end", "duration_s": 5423}`
-- **סטטיסטיקה היסטורית:** כמה ריצות ביום, אורך ממוצע, כמה פעמים הגיע לתקרה. זה עוזר לכייל את `--max-run` לפי שימוש אמיתי ולא לפי ניחוש.
-- פקודה `keep-awake --stats` שמסכמת את הלוג
+## Alternatives
 
-### 8. תיעוד ותחזוקה
-
-- README (הקובץ הזה): מה הכלי עושה, איך מריצים, מגבלות
-- `CHANGELOG.md` לפי [Keep a Changelog](https://keepachangelog.com), וגרסאות לפי SemVer
-- `LICENSE`, למשל MIT
-- גילוי אוטומטי של גרסת התוסף ושל נתיב ה-binary, כי שם התיקייה משתנה בכל עדכון (`anthropic.claude-code-2.1.283-...`). היום זה עובד כי ההתאמה היא לפי תת-מחרוזת, אבל אם Anthropic ישנו את מבנה ההתקנה הזיהוי יישבר. בדיקת smoke שמתריעה על `NO CLAUDE` כש-VS Code פתוח תתפוס את זה.
-
-### 9. חלופות קיימות ולמה בכל זאת כלי משלך
-
-| חלופה | יתרון | חיסרון לשימוש הזה |
+| Alternative | Strength | Drawback for this use case |
 |---|---|---|
-| PowerToys Awake | יציב, ממשק גרפי | לא יודע אם Claude עובד, אלא רק "תמיד" או טיימר |
-| `powercfg /requestsoverride` | מובנה | דורש מנהל, קבוע, ולא תלוי בפעילות |
-| הזזת עכבר מלאכותית | עובד בכל מקום | מזייף פעילות משתמש, משבש את ה-lock screen ואת ה-idle של אפליקציות אחרות |
-| **הכלי הזה** | מודע ל-Claude, עם תקרה ומדדים, בלי מנהל | היוריסטי (עד שיתווספו hooks), Windows בלבד |
+| PowerToys Awake | Stable, graphical UI | Doesn't know whether Claude is working; only "always" or a timer |
+| `powercfg /requestsoverride` | Built in | Requires admin, persistent, not activity-based |
+| Simulated mouse movement | Works everywhere | Fakes user activity, interferes with the lock screen and other apps' idle detection |
+| **This tool** | Claude-aware, with a cap and metrics, no admin | Heuristic (until hooks are added), Windows only |
 
-### סיכום עדיפויות
+---
 
-1. **Hooks כסימן ראשי**: הקפיצה הכי גדולה בדיוק
-2. **הפרדה ל-`state.py` עם בדיקות ושעון מזויף**: ביטחון שהתקרה והשחרור עובדים
-3. **בטיחות סוללה** (`--min-battery`, `--ac-only`)
-4. `pyproject.toml`, ruff, mypy ו-CI על Windows
-5. הפעלה אוטומטית ואייקון מגש
+## License
+
+[MIT](LICENSE)
